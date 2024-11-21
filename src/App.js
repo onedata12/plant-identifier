@@ -1,73 +1,208 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 
+// 파일 업로드 컴포넌트
+const FileUpload = ({ isLoading, onFileSelect }) => {
+  const fileInputRef = React.useRef(null);
+
+  const handleClick = () => {
+    fileInputRef.current.click();
+  };
+
+  return (
+    <div className="upload-section" onClick={handleClick}>
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept="image/*"
+        onChange={onFileSelect}
+        disabled={isLoading}
+        style={{ display: 'none' }}
+      />
+      <p className="text-lg font-medium text-gray-900 mb-2">
+        식물 이미지 업로드
+      </p>
+      <p className="text-sm text-gray-500">
+        이미지를 클릭하거나 드래그하여 업로드하세요
+      </p>
+    </div>
+  );
+};
+
+// 로딩 컴포넌트
+const LoadingCard = () => (
+  <div className="loading-card">
+    <div className="loading-content">
+      <div className="loading-spinner"></div>
+      <div className="loading-text">
+        <h3>식물을 분석하고 있습니다</h3>
+        <p>잠시만 기다려주세요...</p>
+      </div>
+      <div className="loading-steps">
+        <div className="step completed">
+          <span className="step-number">1</span>
+          <span className="step-text">이미지 업로드 완료</span>
+        </div>
+        <div className="step active">
+          <span className="step-number">2</span>
+          <span className="step-text">AI 분석 진행중</span>
+        </div>
+        <div className="step">
+          <span className="step-number">3</span>
+          <span className="step-text">결과 생성</span>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+// 이미지 프리뷰 컴포넌트 수정
+const ImagePreview = ({ image }) => {
+  const [imageUrl, setImageUrl] = useState('');
+
+  useEffect(() => {
+    const url = URL.createObjectURL(image);
+    setImageUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [image]);
+
+  return (
+    <div className="image-preview-wrapper">
+      <div className="image-preview-container">
+        <div className="image-preview-header">
+          <h3>선택된 이미지</h3>
+        </div>
+        <div className="image-preview-content">
+          <img src={imageUrl} alt="선택된 식물" />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 메인 컴포넌트
 function App() {
   const [selectedImage, setSelectedImage] = useState(null);
-  const [result, setResult] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [plantInfo, setPlantInfo] = useState(null);
   
   const API_KEY = process.env.REACT_APP_GEMINI_API_KEY;
 
-  // 이미지 선택 핸들러
   const handleImageUpload = (event) => {
     const file = event.target.files[0];
-    setSelectedImage(file);
+    if (file) {
+      setSelectedImage(file);
+      setError(null);
+      analyzePlant(file);
+    }
   };
 
-  // 폼 제출 핸들러
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    
-    if (!selectedImage) {
-      alert('이미지를 선택해주세요');
-      return;
+  const parsePlantInfo = (text) => {
+    try {
+      const plantData = {
+        name: "정보를 찾을 수 없습니다",
+        scientificName: "정보를 찾을 수 없습니다",
+        difficulty: "초급",
+        waterFrequency: "정보를 찾을 수 없습니다",
+        temperature: "정보를 찾을 수 없습니다",
+        humidity: "정보를 찾을 수 없습니다",
+        features: [],
+        precautions: []
+      };
+
+      const lines = text.split('\n');
+      let currentSection = '';
+
+      lines.forEach(line => {
+        line = line.trim();
+        if (line.includes('이름:') || line.includes('식물:')) {
+          plantData.name = line.split(':')[1].trim();
+        } else if (line.includes('학명:')) {
+          plantData.scientificName = line.split(':')[1].trim();
+        } else if (line.toLowerCase().includes('물주기:')) {
+          plantData.waterFrequency = line.split(':')[1].trim();
+        } else if (line.includes('온도:')) {
+          plantData.temperature = line.split(':')[1].trim();
+        } else if (line.includes('습도:')) {
+          plantData.humidity = line.split(':')[1].trim();
+        } else if (line.includes('특징:')) {
+          currentSection = 'features';
+        } else if (line.includes('주의사항:')) {
+          currentSection = 'precautions';
+        } else if (line && currentSection) {
+          if (line.startsWith('-') || line.startsWith('•')) {
+            line = line.substring(1).trim();
+          }
+          if (line && currentSection === 'features') {
+            plantData.features.push(line);
+          } else if (line && currentSection === 'precautions') {
+            plantData.precautions.push(line);
+          }
+        }
+      });
+
+      return plantData;
+    } catch (error) {
+      console.error('Parsing error:', error);
+      throw new Error('식물 정보 파싱 중 오류가 발생했습니다.');
     }
-    
+  };
+
+  // analyzePlant 함수 수정
+  const analyzePlant = async (file) => {
     if (!API_KEY) {
-      alert('API 키가 설정되지 않았습니다');
+      setError('API 키가 설정되지 않았습니다');
       return;
     }
 
     setIsLoading(true);
-    setResult('이미지 분석 중...');
+    setError(null);
 
     try {
-      // 이미지를 Base64로 변환
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('파일 크기는 5MB 이하여야 합니다.');
+      }
+
       const reader = new FileReader();
-      reader.readAsDataURL(selectedImage);
+      
+      reader.onerror = () => {
+        setError('파일 읽기 중 오류가 발생했습니다.');
+        setIsLoading(false);
+      };
+
+      reader.readAsDataURL(file);
       
       reader.onloadend = async () => {
         try {
           const base64Image = reader.result.split(',')[1];
           
-          // base64 디코딩 후 다시 인코딩하여 이미지 데이터 정제
-          const cleanBase64 = btoa(atob(base64Image));
-          
           const requestBody = {
             contents: [{
               parts: [
                 {
-                  text: "이 식물이나 꽃이 무엇인지 한국어로 설명해주세요."
+                  text: `이 식물의 정보를 다음 형식으로 알려주세요:
+이름:
+학명:
+물주기:
+온도:
+습도:
+특징:
+- 특징1
+- 특징2
+주의사항:
+- 주의사항1
+- 주의사항2`
                 },
                 {
                   inlineData: {
                     mimeType: "image/jpeg",
-                    data: cleanBase64
+                    data: base64Image
                   }
                 }
               ]
             }]
           };
-
-          // 디버깅을 위한 로그
-          console.log('Original base64 length:', base64Image.length);
-          console.log('Cleaned base64 length:', cleanBase64.length);
-
-          // 요청 내용 확인
-          console.log('Request details:', {
-            url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent`,
-            bodyLength: JSON.stringify(requestBody).length
-          });
 
           const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${API_KEY}`,
@@ -81,62 +216,97 @@ function App() {
           );
 
           if (!response.ok) {
-            const errorData = await response.text();
-            console.error('API Error Response:', errorData);
-            throw new Error(`HTTP error! status: ${response.status}, details: ${errorData}`);
+            throw new Error(`서버 오류: ${response.status}`);
           }
 
           const data = await response.json();
-          setResult(data.candidates[0].content.parts[0].text);
+          
+          if (data.candidates?.[0]?.content) {
+            const text = data.candidates[0].content.parts[0].text;
+            console.log('API Response:', text);
+            
+            const plantData = parsePlantInfo(text);
+            setPlantInfo(plantData);
+          } else {
+            throw new Error('API 응답 형식이 올바르지 않습니다.');
+          }
           
         } catch (error) {
-          console.error('Full error:', error);
-          setResult(`이미지 처리 중 오류가 발생했습니다: ${error.message}`);
+          console.error('Error:', error);
+          setError(`이미지 분석 중 오류가 발생했습니다: ${error.message}`);
+          setPlantInfo(null);
+        } finally {
+          setIsLoading(false);
         }
       };
     } catch (error) {
       console.error('Error:', error);
-      setResult('이미지 처리 중 오류가 발생했습니다.');
-    } finally {
+      setError(error.message || '이미지 처리 중 오류가 발생했습니다.');
+      setPlantInfo(null);
       setIsLoading(false);
     }
   };
 
+  const PlantCard = ({ name, scientificName, waterFrequency, temperature, humidity, difficulty, features, precautions }) => {
+    return (
+      <div className="card">
+        <h2>🌿 {name} <span style={{ fontSize: '14px', color: '#888' }}>({difficulty})</span></h2>
+        {scientificName !== "정보를 찾을 수 없습니다" && <h3>{scientificName}</h3>}
+        <div className="tags">
+          <span className="tag related">관엽식물</span>
+          <span className="tag level">초급</span>
+        </div>
+        <div className="info-section">
+          {waterFrequency !== "정보를 찾을 수 없습니다" && <p>💧 물주기: {waterFrequency}</p>}
+          {temperature !== "정보를 찾을 수 없습니다" && <p>🌡️ 적정 온도: {temperature}</p>}
+          {humidity !== "정보를 찾을 수 없습니다" && <p>💨 습도: {humidity}</p>}
+        </div>
+        {features.length > 0 && (
+          <div className="features-section">
+            <h4>특징</h4>
+            <ul>
+              {features.map((feature, index) => (
+                <li key={index}>✨ {feature}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {precautions.length > 0 && (
+          <div className="precautions-section">
+            <h4>주의사항</h4>
+            <ul>
+              {precautions.map((precaution, index) => (
+                <li key={index}>⚠️ {precaution}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="App">
-      <h1>식물 식별기</h1>
+      <h1>Plant Identifier</h1>
       
-      <form onSubmit={handleSubmit}>
-        <input
-          type="file"
-          accept="image/*"
-          onChange={handleImageUpload}
-          disabled={isLoading}
-        />
-        <button type="submit" disabled={isLoading}>
-          {isLoading ? '분석 중...' : '분석하기'}
-        </button>
-      </form>
+      <FileUpload
+        isLoading={isLoading}
+        onFileSelect={handleImageUpload}
+      />
 
-      {selectedImage && (
-        <div className="preview">
-          <h3>선택된 이미지:</h3>
-          <img
-            src={URL.createObjectURL(selectedImage)}
-            alt="선택된 식물"
-            style={{ maxWidth: '300px' }}
-          />
+      {selectedImage && <ImagePreview image={selectedImage} />}
+      
+      {isLoading && <LoadingCard />}
+      
+      {error && (
+        <div className="error">
+          <p>{error}</p>
         </div>
       )}
-
-      {result && (
-        <div className="result">
-          <h3>분석 결과:</h3>
-          <p>{result}</p>
-        </div>
-      )}
+      
+      {plantInfo && !error && <PlantCard {...plantInfo} />}
     </div>
   );
 }
 
-export default App; 
+export default App;
